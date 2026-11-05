@@ -427,20 +427,21 @@ struct AudioBars: View {
     private let phases: [Double] = [0, 1.7, 3.1, 4.4]
 
     var body: some View {
+        // One Canvas draw per frame instead of laying out four views.
         TimelineView(.animation(minimumInterval: 1 / 30, paused: !playing)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .center, spacing: 2.2) {
-                ForEach(0..<4, id: \.self) { i in
+            Canvas { g, sz in
+                let w: CGFloat = 2.8, gap: CGFloat = 2.2
+                for i in 0..<4 {
                     let wave = abs(sin(t * speeds[i] + phases[i])) * 0.6 + abs(sin(t * speeds[i] * 0.37 + phases[i])) * 0.4
                     let v = playing ? 0.25 + 0.75 * wave : 0.2
-                    Capsule()
-                        .fill(color)
-                        .frame(width: 2.8, height: max(2.8, height * v))
+                    let h = max(w, sz.height * v)
+                    let r = CGRect(x: CGFloat(i) * (w + gap), y: (sz.height - h) / 2, width: w, height: h)
+                    g.fill(Path(roundedRect: r, cornerRadius: w / 2), with: .color(color))
                 }
             }
-            .frame(height: height)
         }
-        .animation(.easeOut(duration: 0.25), value: playing)
+        .frame(width: 4 * 2.8 + 3 * 2.2, height: height)
     }
 }
 

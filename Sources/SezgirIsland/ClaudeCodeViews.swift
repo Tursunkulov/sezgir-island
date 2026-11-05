@@ -31,15 +31,24 @@ struct ClaudeSpark: View {
     var color: Color = claudeOrange
 
     var body: some View {
+        // Drawn in a Canvas: no per-frame layout and no blurred shadow, just a cheap radial glow.
         TimelineView(.animation(minimumInterval: 1 / 30, paused: !spinning)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
-            SparkShape()
-                .fill(color)
-                .frame(width: size, height: size)
-                .rotationEffect(.radians(spinning ? t * 1.6 : 0))
-                .scaleEffect(spinning ? 0.9 + 0.1 * sin(t * 3.2) : 1)
-                .shadow(color: color.opacity(0.6), radius: spinning ? 5 : 2)
+            Canvas { g, sz in
+                let c = CGPoint(x: sz.width / 2, y: sz.height / 2)
+                let glowR = sz.width / 2
+                g.fill(Path(ellipseIn: CGRect(x: c.x - glowR, y: c.y - glowR, width: glowR * 2, height: glowR * 2)),
+                       with: .radialGradient(Gradient(colors: [color.opacity(spinning ? 0.35 : 0.18), .clear]),
+                                             center: c, startRadius: 0, endRadius: glowR))
+                let scale = spinning ? 0.9 + 0.1 * sin(t * 3.2) : 1
+                let s = size * scale
+                g.translateBy(x: c.x, y: c.y)
+                g.rotate(by: .radians(spinning ? t * 1.6 : 0))
+                g.fill(SparkShape().path(in: CGRect(x: -s / 2, y: -s / 2, width: s, height: s)), with: .color(color))
+            }
         }
+        .frame(width: size * 1.7, height: size * 1.7)
+        .frame(width: size, height: size)
     }
 }
 
