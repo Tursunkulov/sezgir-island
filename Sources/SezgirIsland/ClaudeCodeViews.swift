@@ -31,7 +31,7 @@ struct ClaudeSpark: View {
     var color: Color = claudeOrange
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 60, paused: !spinning)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !spinning)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             SparkShape()
                 .fill(color)
@@ -74,7 +74,6 @@ struct ClaudeWorkingCompact: View {
 struct ClaudeAttentionCompact: View {
     @Environment(IslandModel.self) private var model
     let side: CGFloat
-    @State private var pulse = false
 
     private var label: String {
         guard let r = model.claude.requests.first else { return "Ответ" }
@@ -86,8 +85,12 @@ struct ClaudeAttentionCompact: View {
         CompactRow(side: side) {
             HStack(spacing: 7) {
                 ZStack {
-                    Circle().fill(claudeOrange.opacity(pulse ? 0.35 : 0.12))
-                        .frame(width: 20, height: 20)
+                    // Time-driven pulse: a repeatForever animation would keep old views alive after transitions.
+                    TimelineView(.animation(minimumInterval: 1 / 20)) { ctx in
+                        let t = ctx.date.timeIntervalSinceReferenceDate
+                        Circle().fill(claudeOrange.opacity(0.12 + 0.23 * (0.5 + 0.5 * sin(t * 3.5))))
+                    }
+                    .frame(width: 20, height: 20)
                     SparkShape().fill(claudeOrange).frame(width: 12, height: 12)
                 }
                 Text("Claude ждёт")
@@ -113,9 +116,6 @@ struct ClaudeAttentionCompact: View {
                     .foregroundStyle(.white.opacity(0.5))
             }
             .padding(.trailing, 11)
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
         }
     }
 }

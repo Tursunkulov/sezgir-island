@@ -58,6 +58,8 @@ final class PrayerTimes {
     private(set) var next: Entry?
     private(set) var current: Entry?
     private(set) var loading = false
+    /// Updated every tick; read it instead of Date() so views and modes refresh with the clock.
+    private(set) var now = Date()
     private(set) var error: String?
     var soundEnabled: Bool {
         didSet { UserDefaults.standard.set(soundEnabled, forKey: "prayerSound") }
@@ -134,6 +136,7 @@ final class PrayerTimes {
 
     func tick() {
         let now = Date()
+        self.now = now
         let year = calendar.component(.year, from: now)
         if !loadedYears.contains(year) || (calendar.component(.month, from: now) == 12 && !loadedYears.contains(year + 1)) {
             Task { await load() }

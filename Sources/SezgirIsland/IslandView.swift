@@ -26,6 +26,9 @@ struct IslandRootView: View {
             Toggle("Claude Code в острове", isOn: Binding(
                 get: { model.claudeHooksInstalled },
                 set: { model.setClaudeHooks($0) }))
+            Toggle("Намаз всегда у выреза", isOn: Binding(
+                get: { model.prayerAlwaysVisible },
+                set: { v in withAnimation(IslandModel.openSpring) { model.prayerAlwaysVisible = v } }))
             Toggle("Запускать при входе", isOn: Binding(
                 get: { model.launchAtLogin },
                 set: { model.setLaunchAtLogin($0) }))
@@ -48,7 +51,7 @@ struct IslandRootView: View {
             ClaudeWorkingCompact(side: l.side).transition(.islandCompact)
         case .claudeAttention:
             ClaudeAttentionCompact(side: l.side).transition(.islandCompact)
-        case .prayerSoon:
+        case .prayerSoon, .prayerIdle:
             PrayerSoonCompact(side: l.side).transition(.islandCompact)
         case .toast(.prayerNow):
             PrayerSoonCompact(side: l.side, now: true).transition(.islandCompact)
@@ -424,7 +427,7 @@ struct AudioBars: View {
     private let phases: [Double] = [0, 1.7, 3.1, 4.4]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 60, paused: !playing)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !playing)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             HStack(alignment: .center, spacing: 2.2) {
                 ForEach(0..<4, id: \.self) { i in

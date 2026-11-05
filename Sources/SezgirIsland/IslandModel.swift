@@ -5,7 +5,7 @@ import ServiceManagement
 
 enum IslandTab: Hashable { case music, claude, prayer }
 enum Toast: Equatable { case charging, unplugged, lowBattery, track, claudeDone, prayerNow }
-enum IslandMode: Equatable { case idle, music, claudeWorking, claudeAttention, prayerSoon, toast(Toast), expanded }
+enum IslandMode: Equatable { case idle, music, claudeWorking, claudeAttention, prayerSoon, prayerIdle, toast(Toast), expanded }
 
 struct IslandLayout {
     var width: CGFloat       // body width (without top flares)
@@ -50,6 +50,10 @@ final class IslandModel {
     let claude = ClaudeCodeHub()
     let prayer = PrayerTimes()
     var prayerAlert: PrayerTimes.Entry?
+    /// Keep "next prayer · in N min" next to the notch whenever nothing else is showing.
+    var prayerAlwaysVisible = UserDefaults.standard.object(forKey: "prayerAlwaysVisible") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(prayerAlwaysVisible, forKey: "prayerAlwaysVisible") }
+    }
     @ObservationIgnored private let hookServer = HookServer()
 
     @ObservationIgnored weak var panel: NotchPanel?
@@ -67,8 +71,9 @@ final class IslandModel {
         if let toast { return .toast(toast) }
         if claude.hasRequests || claude.sessions.values.contains(where: { $0.state == .waiting }) { return .claudeAttention }
         if claude.isWorking { return .claudeWorking }
-        if let n = prayer.next, n.prayer.isPrayer, n.date.timeIntervalSinceNow < 10 * 60 { return .prayerSoon }
+        if let n = prayer.next, n.prayer.isPrayer, n.date.timeIntervalSince(prayer.now) < 10 * 60 { return .prayerSoon }
         if media.hasMedia && media.isPlaying { return .music }
+        if prayerAlwaysVisible, prayer.next != nil { return .prayerIdle }
         return .idle
     }
 
@@ -98,7 +103,7 @@ final class IslandModel {
         case .music, .claudeWorking:
             let s = h + 10
             return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
-        case .prayerSoon, .toast(.prayerNow):
+        case .prayerSoon, .prayerIdle, .toast(.prayerNow):
             let s: CGFloat = 120
             return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
         case .claudeAttention:
@@ -232,8 +237,15 @@ final class IslandModel {
 
     func mouseMoved() {
         let p = NSEvent.mouseLocation
+        // Fast path: mouse is far below a collapsed island and nothing is pending — skip all work.
+        // (This runs on every mouse move system-wide, up to 120 times a second.)
+        if !expanded, expandTask == nil, let s = screen, p.y < s.frame.maxY - notch.height - 40,
+           panel?.ignoresMouseEvents != false {
+            return
+        }
         let rect = islandRect
-        panel?.ignoresMouseEvents = !rect.insetBy(dx: -1, dy: -1).contains(p)
+        let ignore = !rect.insetBy(dx: -1, dy: -1).contains(p)
+        if panel?.ignoresMouseEvents != ignore { panel?.ignoresMouseEvents = ignore } // a window-server call: only on change
         let hot = expanded ? rect.insetBy(dx: -14, dy: -14) : rect.union(notchRect).insetBy(dx: -8, dy: -6)
 
         if hot.contains(p) {

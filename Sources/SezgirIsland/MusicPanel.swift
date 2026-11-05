@@ -109,7 +109,7 @@ struct ProgressScrubber: View {
 
     var body: some View {
         let media = model.media
-        TimelineView(.animation(minimumInterval: nil, paused: !media.isPlaying || dragValue != nil)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 15, paused: !media.isPlaying || dragValue != nil)) { ctx in
             let duration = max(media.duration, 1)
             let current = dragValue ?? media.elapsed(at: ctx.date)
             let active = hover || dragValue != nil

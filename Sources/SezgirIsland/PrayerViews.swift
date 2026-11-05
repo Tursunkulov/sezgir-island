@@ -331,8 +331,10 @@ struct PrayerSoonCompact: View {
                         .foregroundStyle(prayerGreen)
                 } else if let e = entry {
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        Text("через " + prayerCountdown(e.date.timeIntervalSince(ctx.date)))
-                            .foregroundStyle(prayerGreen)
+                        let left = e.date.timeIntervalSince(ctx.date)
+                        Text(left < 3600 ? "через " + prayerCountdown(left) : "в " + model.prayer.timeString(e.date))
+                            .foregroundStyle(left < 600 ? prayerGreen : prayerGreen.opacity(0.75))
+                            .contentTransition(.numericText(countsDown: true))
                     }
                 }
             }
