@@ -12,7 +12,7 @@ struct IslandRootView: View {
         ZStack(alignment: .top) {
             shape
                 .fill(Color.black)
-                .shadow(color: .black.opacity(model.expanded ? 0.6 : 0), radius: 20, y: 10)
+                .shadow(color: .black.opacity(model.expanded ? 0.55 : 0), radius: 16, y: 8)
 
             content(l)
                 .padding(.horizontal, l.topRadius)
@@ -64,8 +64,8 @@ struct IslandRootView: View {
         case .expanded:
             ExpandedIsland()
                 .transition(.asymmetric(
-                    insertion: .islandBlur.animation(.smooth(duration: 0.42).delay(0.07)),
-                    removal: .islandBlur.animation(.smooth(duration: 0.18))))
+                    insertion: .islandOpen.animation(.spring(response: 0.42, dampingFraction: 0.82).delay(0.05)),
+                    removal: .islandOpen.animation(.easeIn(duration: 0.14))))
         }
     }
 }
@@ -74,11 +74,14 @@ struct IslandRootView: View {
 
 struct BlurFade: ViewModifier {
     var amount: Double
+    var scale: Double = 0.06
+    var lift: Double = 0
     func body(content: Content) -> some View {
         content
             .blur(radius: 8 * amount)
             .opacity(1 - amount)
-            .scaleEffect(1 - 0.06 * amount, anchor: .top)
+            .scaleEffect(1 - scale * amount, anchor: .top)
+            .offset(y: -lift * amount)
     }
 }
 
@@ -87,11 +90,17 @@ extension AnyTransition {
         .modifier(active: BlurFade(amount: 1), identity: BlurFade(amount: 0))
     }
 
+    /// Expanded content grows out of the camera: starts smaller, blurred and tucked up under the notch.
+    static var islandOpen: AnyTransition {
+        .modifier(active: BlurFade(amount: 1, scale: 0.18, lift: 10),
+                  identity: BlurFade(amount: 0, scale: 0.18, lift: 10))
+    }
+
     /// Ears next to the camera: fade in a beat after the shape starts growing, leave quickly.
     static var islandCompact: AnyTransition {
         .asymmetric(
-            insertion: islandBlur.animation(.smooth(duration: 0.4).delay(0.1)),
-            removal: islandBlur.animation(.smooth(duration: 0.16)))
+            insertion: islandBlur.animation(.smooth(duration: 0.32).delay(0.08)),
+            removal: islandBlur.animation(.easeIn(duration: 0.12)))
     }
 }
 
@@ -232,7 +241,7 @@ struct ExpandedIsland: View {
                 Spacer(minLength: model.notch.width + 8)
                 BatteryBadge()
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
             .frame(height: model.notch.height)
 
             ZStack {
@@ -243,9 +252,9 @@ struct ExpandedIsland: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 22)
-            .padding(.top, 8)
-            .padding(.bottom, 18)
+            .padding(.horizontal, 18)
+            .padding(.top, 6)
+            .padding(.bottom, 14)
         }
     }
 }

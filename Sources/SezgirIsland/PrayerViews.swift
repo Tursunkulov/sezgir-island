@@ -24,7 +24,7 @@ private struct PrayerDay: View {
 
     var body: some View {
         let p = model.prayer
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             HStack(spacing: 8) {
                 Button(action: onCity) {
                     HStack(spacing: 5) {
@@ -92,7 +92,7 @@ private struct PrayerDay: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(p.soundEnabled ? prayerGreen : .white.opacity(0.4))
                             .contentTransition(.symbolEffect(.replace))
-                            .frame(width: 26, height: 26)
+                            .frame(width: 22, height: 22)
                             .contentShape(Circle())
                     }
                     .buttonStyle(IslandButtonStyle())
@@ -111,7 +111,7 @@ private struct PrayerTile: View {
     @Environment(IslandModel.self) private var model
 
     var body: some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 2) {
             Image(systemName: entry.prayer.icon)
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(isCurrent || isNext ? prayerGreen : .white.opacity(0.5))
@@ -120,14 +120,14 @@ private struct PrayerTile: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.85))
             Text(model.prayer.timeString(entry.date))
-                .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                .font(.system(size: 15, weight: .semibold).monospacedDigit())
                 .foregroundStyle(.white)
             Text(entry.prayer.kazakh)
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.4))
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 74)
+        .frame(height: 64)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(isCurrent ? prayerGreen.opacity(0.17) : .white.opacity(0.05)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -318,7 +318,7 @@ struct PrayerSoonCompact: View {
                     .foregroundStyle(prayerGreen)
                     .symbolRenderingMode(.hierarchical)
                     .symbolEffect(.pulse, options: .repeating, isActive: now)
-                Text(now ? "Время намаза" : (entry?.prayer.name ?? ""))
+                Text(entry?.prayer.name ?? "")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -327,7 +327,7 @@ struct PrayerSoonCompact: View {
         } right: {
             Group {
                 if now, let e = entry {
-                    Text("\(e.prayer.name) · \(model.prayer.timeString(e.date))")
+                    Text("сейчас · " + model.prayer.timeString(e.date))
                         .foregroundStyle(prayerGreen)
                 } else if let e = entry {
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in

@@ -26,10 +26,11 @@ enum ClaudeLink: String {
 @Observable
 @MainActor
 final class IslandModel {
-    static let windowSize = CGSize(width: 780, height: 360)
-    static let openSpring = Animation.spring(duration: 0.52, bounce: 0.24)
-    static let closeSpring = Animation.spring(duration: 0.46, bounce: 0.02)
-    static let tabSpring = Animation.spring(duration: 0.4, bounce: 0.12)
+    static let windowSize = CGSize(width: 700, height: 340)
+    // Notch-style motion: a quick, slightly springy open and a firm, bounce-free close.
+    static let openSpring = Animation.interactiveSpring(response: 0.38, dampingFraction: 0.78)
+    static let closeSpring = Animation.spring(response: 0.42, dampingFraction: 1)
+    static let tabSpring = Animation.spring(response: 0.34, dampingFraction: 0.86)
     static let contentFade = Animation.smooth(duration: 0.38)
 
     var expanded = false
@@ -83,16 +84,16 @@ final class IslandModel {
 
     /// Height of the panel under the notch row; grows for Claude cards.
     var expandedContentHeight: CGFloat {
-        guard tab == .claude else { return tab == .prayer ? 168 : 152 }
+        guard tab == .claude else { return tab == .prayer ? 144 : 124 }
         if let r = claude.requests.first {
             if case .question(let qs) = r.kind {
                 let opts = qs.first?.options.count ?? 2
-                return opts > 2 ? 232 : 182
+                return opts > 2 ? 218 : 170
             }
-            return 200
+            return 186
         }
-        if claude.sessions.isEmpty { return claudeHooksInstalled ? 152 : 200 }
-        return 190
+        if claude.sessions.isEmpty { return claudeHooksInstalled ? 132 : 180 }
+        return 176
     }
 
     var layout: IslandLayout {
@@ -101,25 +102,25 @@ final class IslandModel {
         case .idle:
             return .init(width: w, height: h, side: 0, topRadius: 6, bottomRadius: 10)
         case .music, .claudeWorking:
-            let s = h + 10
-            return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
+            let s = h + 4
+            return .init(width: w + s * 2, height: h, side: s, topRadius: 7, bottomRadius: 12)
         case .prayerSoon, .prayerIdle, .toast(.prayerNow):
-            let s: CGFloat = 120
-            return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
+            let s: CGFloat = 100
+            return .init(width: w + s * 2, height: h, side: s, topRadius: 7, bottomRadius: 12)
         case .claudeAttention:
-            let s: CGFloat = 118
-            return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
+            let s: CGFloat = 110
+            return .init(width: w + s * 2, height: h, side: s, topRadius: 7, bottomRadius: 12)
         case .toast(.claudeDone):
-            let s: CGFloat = 140
-            return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
+            let s: CGFloat = 122
+            return .init(width: w + s * 2, height: h, side: s, topRadius: 7, bottomRadius: 12)
         case .toast(.track):
-            let s: CGFloat = 150
-            return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
+            let s: CGFloat = 132
+            return .init(width: w + s * 2, height: h, side: s, topRadius: 7, bottomRadius: 12)
         case .toast:
-            let s: CGFloat = 104
-            return .init(width: w + s * 2, height: h, side: s, topRadius: 8, bottomRadius: 13)
+            let s: CGFloat = 94
+            return .init(width: w + s * 2, height: h, side: s, topRadius: 7, bottomRadius: 12)
         case .expanded:
-            return .init(width: max(w + 520, 720), height: h + expandedContentHeight, side: 0, topRadius: 16, bottomRadius: 34)
+            return .init(width: max(w + 400, 580), height: h + expandedContentHeight, side: 0, topRadius: 14, bottomRadius: 28)
         }
     }
 

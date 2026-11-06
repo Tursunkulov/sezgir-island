@@ -9,17 +9,17 @@ struct MusicPanel: View {
 
     private var player: some View {
         let media = model.media
-        return HStack(spacing: 18) {
+        return HStack(spacing: 16) {
             Button { media.openPlayerApp() } label: {
-                ArtworkView(image: media.artwork, size: 100, radius: 20)
-                    .shadow(color: media.accent.opacity(0.45), radius: 24, y: 4)
+                ArtworkView(image: media.artwork, size: 84, radius: 17)
+                    .shadow(color: media.accent.opacity(0.45), radius: 20, y: 4)
                     .overlay(alignment: .bottomTrailing) {
                         if let icon = media.appIcon {
                             Image(nsImage: icon)
                                 .resizable()
-                                .frame(width: 28, height: 28)
+                                .frame(width: 24, height: 24)
                                 .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
-                                .offset(x: 8, y: 8)
+                                .offset(x: 7, y: 7)
                         }
                     }
                     .scaleEffect(media.isPlaying ? 1 : 0.94)
@@ -32,7 +32,7 @@ struct MusicPanel: View {
                 HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(media.title)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 14, weight: .semibold))
                             .contentTransition(.opacity)
                             .foregroundStyle(.white)
                         Text(media.artist.isEmpty ? media.album : media.artist)
@@ -50,11 +50,11 @@ struct MusicPanel: View {
                 ProgressScrubber()
                 Spacer(minLength: 4)
 
-                HStack(spacing: 26) {
+                HStack(spacing: 22) {
                     Spacer()
-                    ControlButton(icon: "backward.fill", size: 17) { media.previous() }
-                    ControlButton(icon: media.isPlaying ? "pause.fill" : "play.fill", size: 25) { media.togglePlay() }
-                    ControlButton(icon: "forward.fill", size: 17) { media.next() }
+                    ControlButton(icon: "backward.fill", size: 15) { media.previous() }
+                    ControlButton(icon: media.isPlaying ? "pause.fill" : "play.fill", size: 22) { media.togglePlay() }
+                    ControlButton(icon: "forward.fill", size: 15) { media.next() }
                     Spacer()
                 }
             }
@@ -63,9 +63,9 @@ struct MusicPanel: View {
     }
 
     private var empty: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             Image(systemName: "music.note.list")
-                .font(.system(size: 28, weight: .semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.3))
             Text("Сейчас ничего не играет")
                 .font(.system(size: 13, weight: .medium))
@@ -95,7 +95,7 @@ struct ControlButton: View {
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.white)
                 .contentTransition(.symbolEffect(.replace.downUp))
-                .frame(width: size * 1.9, height: size * 1.9)
+                .frame(width: size * 1.8, height: size * 1.8)
                 .contentShape(Circle())
         }
         .buttonStyle(IslandButtonStyle())
