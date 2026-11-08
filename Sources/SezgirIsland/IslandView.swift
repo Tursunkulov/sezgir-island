@@ -128,11 +128,18 @@ struct CompactMusic: View {
 
     var body: some View {
         let h = model.notch.height
+        let quran = model.quran.isPlaying ? model.quran.surah : nil
         CompactRow(side: side) {
-            ArtworkView(image: model.media.artwork, size: h - 10, radius: 6)
-                .padding(.leading, 9)
+            Group {
+                if let quran {
+                    SurahArt(surah: quran, size: h - 10)
+                } else {
+                    ArtworkView(image: model.media.artwork, size: h - 10, radius: 6)
+                }
+            }
+            .padding(.leading, 9)
         } right: {
-            AudioBars(color: model.media.accent, playing: model.media.isPlaying, height: 13)
+            AudioBars(color: quran != nil ? prayerGreen : model.media.accent, playing: true, height: 13)
                 .padding(.trailing, 11)
         }
     }
@@ -144,14 +151,19 @@ struct TrackToast: View {
 
     var body: some View {
         let h = model.notch.height
+        let surah = model.quran.isPlaying || model.quran.isLoading ? model.quran.surah : nil
         CompactRow(side: side) {
             HStack(spacing: 8) {
-                ArtworkView(image: model.media.artwork, size: h - 10, radius: 6)
+                if let surah {
+                    SurahArt(surah: surah, size: h - 10)
+                } else {
+                    ArtworkView(image: model.media.artwork, size: h - 10, radius: 6)
+                }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(model.media.title)
+                    Text(surah.map { "\($0.id). \($0.name)" } ?? model.media.title)
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text("Сейчас играет")
+                    Text(surah?.russian ?? "Сейчас играет")
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(.white.opacity(0.45))
                 }
@@ -160,11 +172,12 @@ struct TrackToast: View {
             .padding(.leading, 9)
         } right: {
             HStack(spacing: 8) {
-                Text(model.media.artist)
+                Text(surah != nil ? model.quran.reciter.shortName : model.media.artist)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.6))
                     .lineLimit(1)
-                AudioBars(color: model.media.accent, playing: model.media.isPlaying, height: 13)
+                AudioBars(color: surah != nil ? prayerGreen : model.media.accent,
+                          playing: surah != nil || model.media.isPlaying, height: 13)
             }
             .padding(.trailing, 11)
         }
@@ -332,7 +345,9 @@ private struct TabButton: View {
     @ViewBuilder private var icon: some View {
         switch tab {
         case .music:
-            if model.media.isPlaying && model.media.hasMedia {
+            if model.quran.isPlaying {
+                AudioBars(color: selected ? prayerGreen : .white.opacity(0.7), playing: true, height: 11)
+            } else if model.media.isPlaying && model.media.hasMedia {
                 AudioBars(color: selected ? model.media.accent : .white.opacity(0.7), playing: true, height: 11)
             } else {
                 Image(systemName: "music.note").font(.system(size: 12, weight: .bold))
@@ -370,7 +385,7 @@ extension IslandTab: CaseIterable {
     static var allCases: [IslandTab] { [.music, .claude, .prayer] }
     var title: String {
         switch self {
-        case .music: "Музыка"
+        case .music: "Плеер"
         case .claude: "Claude"
         case .prayer: "Намаз"
         }

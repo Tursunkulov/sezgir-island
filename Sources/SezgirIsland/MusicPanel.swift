@@ -4,7 +4,19 @@ struct MusicPanel: View {
     @Environment(IslandModel.self) private var model
 
     var body: some View {
-        if model.media.hasMedia { player } else { empty }
+        ZStack {
+            if model.surahPickerOpen {
+                SurahPicker().transition(.islandBlur)
+            } else {
+                switch model.playerSource {
+                case .quran: QuranPlayerView().transition(.islandBlur)
+                case .system: player.transition(.islandBlur)
+                case nil: empty.transition(.islandBlur)
+                }
+            }
+        }
+        .animation(IslandModel.tabSpring, value: model.surahPickerOpen)
+        .animation(IslandModel.tabSpring, value: model.playerSource)
     }
 
     private var player: some View {
@@ -44,10 +56,15 @@ struct MusicPanel: View {
                     Spacer(minLength: 6)
                     AudioBars(color: media.accent, playing: media.isPlaying, height: 16)
                         .padding(.top, 2)
+                    SmallIconButton(icon: "book.closed.fill", help: "Коран") {
+                        withAnimation(IslandModel.tabSpring) { model.playerPick = .quran }
+                        if model.quran.surah == nil { model.surahPickerOpen = true }
+                    }
                 }
 
                 Spacer(minLength: 6)
-                ProgressScrubber()
+                ProgressScrubber(accent: media.accent, duration: media.duration, playing: media.isPlaying,
+                                 elapsed: { media.elapsed(at: $0) }, seek: { media.seek(to: $0) })
                 Spacer(minLength: 4)
 
                 HStack(spacing: 22) {
@@ -71,10 +88,11 @@ struct MusicPanel: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white.opacity(0.55))
             HStack(spacing: 8) {
-                Chip(title: "Яндекс Музыка", icon: "music.note", tint: .yellow) {
-                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ru.yandex.desktop.music") {
-                        NSWorkspace.shared.openApplication(at: url, configuration: .init())
-                    }
+                Chip(title: "Коран", icon: "book.closed.fill", tint: prayerGreen) {
+                    model.quran.resume()
+                }
+                Chip(title: "Выбрать суру", icon: "list.bullet", tint: prayerGreen) {
+                    model.surahPickerOpen = true
                 }
                 Chip(title: "YouTube", icon: "play.rectangle.fill", tint: .red) {
                     NSWorkspace.shared.open(URL(string: "https://www.youtube.com")!)
@@ -103,15 +121,18 @@ struct ControlButton: View {
 }
 
 struct ProgressScrubber: View {
-    @Environment(IslandModel.self) private var model
+    let accent: Color
+    let duration: Double
+    let playing: Bool
+    let elapsed: (Date) -> Double
+    let seek: (Double) -> Void
     @State private var dragValue: Double?
     @State private var hover = false
 
     var body: some View {
-        let media = model.media
-        TimelineView(.animation(minimumInterval: 1 / 15, paused: !media.isPlaying || dragValue != nil)) { ctx in
-            let duration = max(media.duration, 1)
-            let current = dragValue ?? media.elapsed(at: ctx.date)
+        TimelineView(.animation(minimumInterval: 1 / 15, paused: !playing || dragValue != nil)) { ctx in
+            let duration = max(self.duration, 1)
+            let current = min(dragValue ?? elapsed(ctx.date), duration)
             let active = hover || dragValue != nil
 
             HStack(spacing: 10) {
@@ -121,10 +142,10 @@ struct ProgressScrubber: View {
                     ZStack(alignment: .leading) {
                         Capsule().fill(.white.opacity(0.16))
                         Capsule()
-                            .fill(LinearGradient(colors: [media.accent.opacity(0.75), media.accent],
+                            .fill(LinearGradient(colors: [accent.opacity(0.75), accent],
                                                  startPoint: .leading, endPoint: .trailing))
                             .frame(width: max(active ? 7 : 5, g.size.width * frac))
-                            .shadow(color: media.accent.opacity(active ? 0.6 : 0.3), radius: 6)
+                            .shadow(color: accent.opacity(active ? 0.6 : 0.3), radius: 6)
                     }
                     .frame(height: active ? 7 : 5)
                     .frame(maxHeight: .infinity)
@@ -135,14 +156,14 @@ struct ProgressScrubber: View {
                                 dragValue = Double(min(max(v.location.x / max(g.size.width, 1), 0), 1)) * duration
                             }
                             .onEnded { _ in
-                                if let d = dragValue { media.seek(to: d) }
+                                if let d = dragValue { seek(d) }
                                 dragValue = nil
                             }
                     )
                     .onHover { hover = $0 }
                 }
                 .frame(height: 16)
-                Text("-" + format(max(0, duration - current))).modifier(TimeLabel())
+                Text(self.duration > 0 ? "-" + format(max(0, duration - current)) : "--:--").modifier(TimeLabel())
             }
             .animation(.spring(response: 0.25, dampingFraction: 0.8), value: active)
         }

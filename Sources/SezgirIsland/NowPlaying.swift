@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import Observation
 
-/// Reads system-wide Now Playing (Яндекс Музыка, YouTube in a browser, Spotify, Music…)
+/// Reads system-wide Now Playing (YouTube in a browser, Spotify, Music…)
 /// through a tiny bridge loaded into /usr/bin/perl, and sends play/pause/next/seek back.
 @Observable
 @MainActor
@@ -121,6 +121,9 @@ final class NowPlaying {
     }
 
     private func apply(_ o: [String: Any]) {
+        // Our own Quran player publishes to Now Playing too; it has its own UI, so don't mirror it.
+        var o = o
+        if let b = o["bundle"] as? String, b == Bundle.main.bundleIdentifier { o = [:] }
         let newTitle = o["title"] as? String ?? ""
         let newArtist = o["artist"] as? String ?? ""
         let changed = newTitle != title || newArtist != artist

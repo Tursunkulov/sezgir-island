@@ -5,8 +5,8 @@
 <h1 align="center">Sezgir Island</h1>
 
 <p align="center">
-  Dynamic Island для MacBook с вырезом: музыка, Claude Code и время намаза по Муфтияту РК — прямо в «чёлке».<br>
-  <sub>A Dynamic-Island-style notch app for macOS: media controls, Claude Code approvals and Kazakhstan prayer times.</sub>
+  Dynamic Island для MacBook с вырезом: Коран, YouTube, Claude Code и время намаза по Муфтияту РК — прямо в «чёлке».<br>
+  <sub>A Dynamic-Island-style notch app for macOS: Quran player, media controls, Claude Code approvals and Kazakhstan prayer times.</sub>
 </p>
 
 <p align="center">
@@ -15,10 +15,15 @@
 
 ## Возможности
 
-### 🎵 Музыка
-- Работает с любым плеером, который попадает в системный «Сейчас играет»: **Яндекс Музыка**, YouTube в браузере, Spotify, Apple Music.
-- Пока играет трек — по бокам выреза обложка и эквалайзер. При смене трека остров на пару секунд показывает название.
-- Наведите курсор на вырез: обложка с подсветкой в цвет альбома, перемотка, назад / пауза / вперёд.
+### 📖 Коран
+- Встроенный плеер: все 114 сур в исполнении чтецов с [quran.com](https://quran.com). По умолчанию — **Мишари Рашид аль-Афаси**, ещё ас-Судайс, аш-Шурайм, аль-Хусари, аль-Миншави, Абдульбасит и другие.
+- Поиск суры по-русски, латиницей, по переводу или номеру: «ясин», «бакара», «Корова», 67.
+- Запоминает суру, место и чтеца. После суры сразу начинается следующая.
+- Клавиши ⏯ ⏮ ⏭ на клавиатуре и «Пункт управления» тоже управляют чтением. Если играло видео в YouTube, оно встанет на паузу.
+
+### ▶️ YouTube и другие плееры
+- Всё, что попадает в системный «Сейчас играет»: YouTube в браузере, Spotify, Apple Music.
+- Пока что-то играет — по бокам выреза обложка и эквалайзер; наведите курсор — перемотка, назад / пауза / вперёд.
 
 ### ✦ Claude Code
 Управляйте Claude Code, не переключаясь в его окно.
@@ -89,14 +94,15 @@ cd sezgir-island
 |---|---|
 | `Sources/SezgirIsland/NotchPanel.swift`, `NotchShape.swift` | Прозрачная панель над вырезом и форма острова |
 | `IslandModel.swift`, `IslandView.swift` | Состояния, наведение, анимации, вкладки |
+| `QuranPlayer.swift`, `QuranViews.swift`, `SurahList.swift` | Плеер Корана (аудио с api.quran.com) |
 | `NowPlaying.swift`, `Bridge/` | Системное «Сейчас играет» |
 | `ClaudeCodeHub.swift`, `HookServer.swift`, `HookInstaller.swift` | Интеграция с Claude Code через хуки |
 | `PrayerTimes.swift`, `PrayerViews.swift` | Время намаза из api.muftyat.kz |
 
 **Про музыку.** С macOS 15.4 обычные приложения не могут читать системный MediaRemote. Маленький мост (`Bridge/bridge.m`) загружается в системный `/usr/bin/perl`, которому это по-прежнему разрешено, и общается с приложением строками JSON. Идея — из [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter).
 
-Скриншоты для README: `open "build/Sezgir Island.app" --args -demo music|claude|prayer|charging|track`.
+Скриншоты для README: `open "build/Sezgir Island.app" --args -demo quran|surahs|music|claude|prayer|charging|track`.
 
 ## Лицензия
 
-[MIT](LICENSE). Проект не связан с Apple, Anthropic или ДУМК. «Dynamic Island» — товарный знак Apple; время намаза предоставляет [muftyat.kz](https://muftyat.kz).
+[MIT](LICENSE). Проект не связан с Apple, Anthropic, quran.com или ДУМК. «Dynamic Island» — товарный знак Apple; время намаза предоставляет [muftyat.kz](https://muftyat.kz), аудио Корана — [quran.com](https://quran.com).

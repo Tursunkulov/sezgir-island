@@ -4,6 +4,7 @@ import Observation
 import ServiceManagement
 
 enum IslandTab: Hashable { case music, claude, prayer }
+enum PlayerSource: Equatable { case quran, system }
 enum Toast: Equatable { case charging, unplugged, lowBattery, track, claudeDone, prayerNow }
 enum IslandMode: Equatable { case idle, music, claudeWorking, claudeAttention, prayerSoon, prayerIdle, toast(Toast), expanded }
 
@@ -50,6 +51,10 @@ final class IslandModel {
     let battery = BatteryMonitor()
     let claude = ClaudeCodeHub()
     let prayer = PrayerTimes()
+    let quran = QuranPlayer()
+    /// Source picked by hand in the player tab; cleared when the island closes.
+    var playerPick: PlayerSource?
+    var surahPickerOpen = false
     var prayerAlert: PrayerTimes.Entry?
     /// Keep "next prayer · in N min" next to the notch whenever nothing else is showing.
     var prayerAlwaysVisible = UserDefaults.standard.object(forKey: "prayerAlwaysVisible") as? Bool ?? true {
@@ -73,7 +78,7 @@ final class IslandModel {
         if claude.hasRequests || claude.sessions.values.contains(where: { $0.state == .waiting }) { return .claudeAttention }
         if claude.isWorking { return .claudeWorking }
         if let n = prayer.next, n.prayer.isPrayer, n.date.timeIntervalSince(prayer.now) < 10 * 60 { return .prayerSoon }
-        if media.hasMedia && media.isPlaying { return .music }
+        if quran.isPlaying || (media.hasMedia && media.isPlaying) { return .music }
         if prayerAlwaysVisible, prayer.next != nil { return .prayerIdle }
         return .idle
     }
@@ -82,8 +87,19 @@ final class IslandModel {
         demoLock || isEditing || (tab == .claude && (!claudeText.isEmpty || claude.hasRequests))
     }
 
+    /// What the player tab shows: whatever is playing, else whatever was used last.
+    var playerSource: PlayerSource? {
+        if let playerPick { return playerPick }
+        if quran.isPlaying || quran.isLoading { return .quran }
+        if media.hasMedia && media.isPlaying { return .system }
+        if quran.surah != nil { return .quran }
+        if media.hasMedia { return .system }
+        return nil
+    }
+
     /// Height of the panel under the notch row; grows for Claude cards.
     var expandedContentHeight: CGFloat {
+        if tab == .music && surahPickerOpen { return 204 }
         guard tab == .claude else { return tab == .prayer ? 144 : 124 }
         if let r = claude.requests.first {
             if case .question(let qs) = r.kind {
@@ -128,7 +144,16 @@ final class IslandModel {
 
     func start() {
         configureScreen()
-        media.onTrackChange = { [weak self] in self?.showToast(.track, for: 3.2) }
+        media.onTrackChange = { [weak self] in
+            guard let self, !self.quran.isPlaying else { return }
+            self.showToast(.track, for: 3.2)
+        }
+        quran.onAutoAdvance = { [weak self] in self?.showToast(.track, for: 3.2) }
+        // Don't let a recitation play over a YouTube video or music.
+        quran.willPlay = { [weak self] in
+            guard let self, self.media.hasMedia, self.media.isPlaying else { return }
+            self.media.togglePlay()
+        }
         battery.onEvent = { [weak self] event in
             switch event {
             case .pluggedIn: self?.showToast(.charging, for: 3)
@@ -299,6 +324,8 @@ final class IslandModel {
         collapseTask?.cancel(); collapseTask = nil
         withAnimation(Self.closeSpring) { expanded = false }
         isEditing = false
+        playerPick = nil
+        surahPickerOpen = false
         if panel?.isKeyWindow == true {
             if restoreFocus { NSWorkspace.shared.frontmostApplication?.activate() }
             panel?.resignKey()
@@ -465,6 +492,12 @@ final class IslandModel {
                 guard let self else { return }
                 switch demo {
                 case "music": self.expand(tab: .music); self.demoLock = true
+                case "quran":
+                    self.quran.cue(self.quran.lastSurah ?? Surah.by(id: 36)!)
+                    self.playerPick = .quran
+                    self.expand(tab: .music); self.demoLock = true
+                case "surahs":
+                    self.expand(tab: .music); self.surahPickerOpen = true; self.demoLock = true
                 case "claude": self.expand(tab: .claude); self.demoLock = true
                 case "charging": self.showToast(.charging, for: 3600)
                 case "track": self.showToast(.track, for: 3600)
