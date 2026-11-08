@@ -71,6 +71,10 @@ final class PrayerTimes {
     @ObservationIgnored private var loadedYears: Set<Int> = []
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var announced: Set<String> = []
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var nextAttempt = Date.distantPast
+    @ObservationIgnored private var failures = 0
 
     init() {
         if let data = UserDefaults.standard.data(forKey: "prayerCity"),
@@ -83,14 +87,29 @@ final class PrayerTimes {
     }
 
     func start() {
-        Task { await load() }
+        ensureLoaded()
         let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        t.tolerance = 5
         RunLoop.main.add(t, forMode: .common)
         timer = t
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+            MainActor.assumeIsolated {
+                self?.nextAttempt = .distantPast // the network is probably back after sleep
+                self?.tick()
+            }
+        }
+    }
+
+    /// Start a load unless one is running or we are backing off after a failure.
+    private func ensureLoaded() {
+        guard loadTask == nil, Date() >= nextAttempt else { return }
+        loadGeneration += 1
+        let gen = loadGeneration
+        loadTask = Task { [weak self] in
+            await self?.load(generation: gen)
+            if self?.loadGeneration == gen { self?.loadTask = nil }
         }
     }
 
@@ -103,7 +122,12 @@ final class PrayerTimes {
         today = []
         next = nil
         current = nil
-        Task { await load() }
+        error = nil
+        loadTask?.cancel()
+        loadTask = nil
+        failures = 0
+        nextAttempt = .distantPast
+        ensureLoaded()
     }
 
     // MARK: Time keeping
@@ -136,15 +160,28 @@ final class PrayerTimes {
 
     func tick() {
         let now = Date()
-        self.now = now
         let year = calendar.component(.year, from: now)
         if !loadedYears.contains(year) || (calendar.component(.month, from: now) == 12 && !loadedYears.contains(year + 1)) {
-            Task { await load() }
+            ensureLoaded()
         }
+        update()
+    }
+
+    /// Recompute today / current / next from the loaded data (no network).
+    private func update() {
+        let now = Date()
+        self.now = now
         let t = entries(for: now)
         today = t
         // After sunrise Fajr is over and nothing is "current" until Zuhr.
-        current = t.last(where: { $0.date <= now }).flatMap { $0.prayer.isPrayer ? $0 : nil }
+        // Before Fajr, last night's Isha is still the current prayer.
+        if let last = t.last(where: { $0.date <= now }) {
+            current = last.prayer.isPrayer ? last : nil
+        } else {
+            current = calendar.date(byAdding: .day, value: -1, to: now)
+                .flatMap { entries(for: $0).last }
+                .flatMap { $0.prayer == .isha ? $0 : nil }
+        }
         let upcoming = t.first(where: { $0.date > now })
             ?? entries(for: calendar.date(byAdding: .day, value: 1, to: now) ?? now).first
         next = upcoming
@@ -171,13 +208,17 @@ final class PrayerTimes {
 
     private var cacheDir: URL { HookServer.supportDir.appendingPathComponent("prayer", isDirectory: true) }
 
-    func load() async {
+    private func load(generation gen: Int) async {
+        let city = self.city
         let now = Date()
         let year = calendar.component(.year, from: now)
         var years = [year]
         if calendar.component(.month, from: now) == 12 { years.append(year + 1) }
         loading = true
-        defer { loading = false; tick() }
+        defer {
+            if gen == loadGeneration { loading = false; update() }
+        }
+        var failed = false
         for y in years where !loadedYears.contains(y) {
             let file = cacheDir.appendingPathComponent("\(city.id)-\(y).json")
             if let data = try? Data(contentsOf: file), ingest(data) {
@@ -187,14 +228,26 @@ final class PrayerTimes {
             guard let url = URL(string: "https://api.muftyat.kz/prayer-times/\(y)/\(city.lat)/\(city.lng)") else { continue }
             do {
                 let (data, resp) = try await URLSession.shared.data(from: url)
+                // The user may have picked another city while we were waiting.
+                guard gen == loadGeneration, !Task.isCancelled, city == self.city else { return }
                 guard (resp as? HTTPURLResponse)?.statusCode == 200, ingest(data) else { throw URLError(.badServerResponse) }
                 try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-                try? data.write(to: file)
+                try? data.write(to: file, options: .atomic)
                 loadedYears.insert(y)
-                error = nil
+                if y == year { error = nil }
             } catch {
+                guard gen == loadGeneration, city == self.city else { return }
+                failed = true
                 if y == year { self.error = "Нет связи с muftyat.kz" }
             }
+        }
+        // Back off after a failure (offline, or next year not published yet): 1, 2, 4 … 30 min.
+        if failed {
+            failures += 1
+            nextAttempt = Date().addingTimeInterval(min(60 * pow(2, Double(failures - 1)), 30 * 60))
+        } else {
+            failures = 0
+            nextAttempt = .distantPast
         }
     }
 

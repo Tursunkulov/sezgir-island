@@ -119,6 +119,9 @@ final class QuranPlayer {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var lastSavedSecond = -1
     @ObservationIgnored private var pendingStart = false
+    /// "reciter/surah" of the AVPlayerItem that is loaded right now.
+    @ObservationIgnored private var itemKey: String?
+    @ObservationIgnored private var itemBag = Set<AnyCancellable>()
     @ObservationIgnored private let defaults = UserDefaults.standard
 
     var lastSurah: Surah? { Surah.by(id: defaults.integer(forKey: "quranSurah")) }
@@ -159,15 +162,31 @@ final class QuranPlayer {
         return t.isFinite ? t : 0
     }
 
+    private func key(_ s: Surah, _ r: Reciter) -> String { "\(r.id)/\(s.id)" }
+
+    /// The loaded AVPlayerItem really is the surah + reciter shown in the UI.
+    private var itemMatches: Bool {
+        guard let s = surah, player.currentItem != nil else { return false }
+        return itemKey == key(s, reciter)
+    }
+
     /// Resume the last surah where it stopped, or start from Al-Fatihah.
     func resume() {
-        if surah != nil, player.currentItem != nil { play(); return }
-        let s = lastSurah ?? Surah.all[0]
-        let pos = defaults.double(forKey: "quranPosition")
+        if itemMatches { play(); return }
+        let s = surah ?? lastSurah ?? Surah.all[0]
+        // Only reuse the saved spot if it belongs to this surah with this reciter.
+        let pos = defaults.string(forKey: "quranPositionKey") == key(s, reciter)
+            ? defaults.double(forKey: "quranPosition") : 0
         play(s, from: pos)
     }
 
     func play(_ s: Surah, from position: Double = 0) {
+        willPlay?()
+        // Stop the previous surah right away so it can't keep playing (or overwrite the saved spot).
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        itemKey = nil
+        itemBag.removeAll()
         withAnimation(.smooth(duration: 0.35)) {
             surah = s
             error = nil
@@ -176,31 +195,32 @@ final class QuranPlayer {
         }
         pendingStart = true
         defaults.set(s.id, forKey: "quranSurah")
-        defaults.set(position, forKey: "quranPosition")
-        updateNowPlaying()
         loadTask?.cancel()
         let reciter = reciter
         loadTask = Task { [weak self] in
             guard let self else { return }
+            @MainActor func current() -> Bool {
+                guard !Task.isCancelled else { return false }
+                return self.surah == s && self.reciter == reciter
+            }
             do {
                 let url = try await self.audioURL(surah: s.id, reciter: reciter.id)
-                guard !Task.isCancelled, self.surah == s else { return }
+                guard current() else { return }
                 let item = AVPlayerItem(url: url)
-                self.player.replaceCurrentItem(with: item)
+                self.attach(item, key: self.key(s, reciter))
                 if position > 1 {
                     await self.player.seek(to: CMTime(seconds: position, preferredTimescale: 600))
                 }
-                guard !Task.isCancelled, self.surah == s else { return }
-                self.willPlay?()
+                guard current() else { return }
                 self.player.play()
-                if let d = try? await item.asset.load(.duration), d.seconds.isFinite, self.surah == s {
+                if let d = try? await item.asset.load(.duration), d.seconds.isFinite, d.seconds > 0,
+                   self.player.currentItem === item {
                     self.duration = d.seconds
                     self.updateNowPlaying()
                 }
             } catch {
-                guard !Task.isCancelled else { return }
-                self.pendingStart = false
-                withAnimation { self.isLoading = false; self.error = "Не удалось загрузить суру. Проверьте интернет." }
+                guard current() else { return }
+                self.failed("Не удалось загрузить суру. Проверьте интернет.")
             }
         }
     }
@@ -208,16 +228,20 @@ final class QuranPlayer {
     /// Load a surah without starting it (used for screenshots / demo).
     func cue(_ s: Surah) {
         surah = s
+        let reciter = reciter
         Task { [weak self] in
-            guard let self, let url = try? await self.audioURL(surah: s.id, reciter: self.reciter.id) else { return }
+            guard let self, let url = try? await self.audioURL(surah: s.id, reciter: reciter.id),
+                  self.surah == s, self.reciter == reciter else { return }
             let item = AVPlayerItem(url: url)
-            self.player.replaceCurrentItem(with: item)
-            if let d = try? await item.asset.load(.duration), d.seconds.isFinite { self.duration = d.seconds }
+            self.attach(item, key: self.key(s, reciter))
+            if let d = try? await item.asset.load(.duration), d.seconds.isFinite, self.player.currentItem === item {
+                self.duration = d.seconds
+            }
         }
     }
 
     func play() {
-        guard player.currentItem != nil else { resume(); return }
+        guard itemMatches else { resume(); return }
         willPlay?()
         player.play()
     }
@@ -240,25 +264,30 @@ final class QuranPlayer {
     /// Like a music player: restart the surah unless we are at its very beginning.
     func previous() {
         guard let s = surah else { return }
-        if currentTime > 5 { seek(to: 0); return }
+        if itemMatches, currentTime > 5 { seek(to: 0); return }
         if let p = Surah.by(id: s.id - 1) { play(p) } else { seek(to: 0) }
     }
 
     func seek(to seconds: Double) {
-        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) { [weak self] _ in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.updateNowPlaying() } }
+        guard itemMatches, seconds.isFinite else { return }
+        player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600)) { [weak self] _ in
+            Task { @MainActor in self?.updateNowPlaying() }
         }
     }
 
     func setReciter(_ r: Reciter) {
         guard r != reciter else { return }
+        let wasActive = pendingStart || isPlaying || itemMatches
         reciter = r
         defaults.set(r.id, forKey: "quranReciter")
         // Recitations differ in length, so start the current surah over with the new voice.
-        if let s = surah, player.currentItem != nil { play(s) }
+        if let s = surah, wasActive { play(s) }
     }
 
     // MARK: Internals
+
+    /// Hosts quran.com actually serves recitations from; anything else in the API reply is ignored.
+    private static let audioHosts = ["quranicaudio.com", "quran.com", "qurancdn.com"]
 
     private func audioURL(surah: Int, reciter: Int) async throws -> URL {
         let key = "\(reciter)/\(surah)"
@@ -268,16 +297,46 @@ final class QuranPlayer {
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let file = json["audio_file"] as? [String: Any],
-              let s = file["audio_url"] as? String, let url = URL(string: s) else {
+              let s = file["audio_url"] as? String, let url = URL(string: s),
+              url.scheme == "https", let host = url.host?.lowercased(),
+              Self.audioHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) else {
             throw URLError(.badServerResponse)
         }
         urlCache[key] = url
         return url
     }
 
+    /// Make `item` current and watch it for load / playback failures.
+    private func attach(_ item: AVPlayerItem, key: String) {
+        itemBag.removeAll()
+        player.replaceCurrentItem(with: item)
+        itemKey = key
+        item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak item] status in
+                MainActor.assumeIsolated {
+                    guard let self, status == .failed, self.player.currentItem === item else { return }
+                    self.failed("Не удалось воспроизвести суру.")
+                }
+            }
+            .store(in: &itemBag)
+        NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification, object: item)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.failed("Воспроизведение прервалось. Проверьте интернет.") }
+            }
+            .store(in: &itemBag)
+    }
+
+    private func failed(_ message: String) {
+        pendingStart = false
+        player.pause()
+        withAnimation { isLoading = false; isPlaying = false; error = message }
+    }
+
     private func statusChanged(_ status: AVPlayer.TimeControlStatus) {
         let playing = status == .playing
-        if playing { pendingStart = false }
+        if playing { pendingStart = false; if error != nil { error = nil } }
         let loading = !playing && (pendingStart || status == .waitingToPlayAtSpecifiedRate)
         if playing != isPlaying || loading != isLoading {
             withAnimation(.smooth(duration: 0.35)) {
@@ -292,21 +351,22 @@ final class QuranPlayer {
     private func tick(_ t: Double) {
         guard isPlaying, t.isFinite else { return }
         let sec = Int(t)
-        if sec / 5 != lastSavedSecond / 5 { lastSavedSecond = sec; defaults.set(t, forKey: "quranPosition") }
+        if sec / 5 != lastSavedSecond / 5 { lastSavedSecond = sec; saveProgress() }
     }
 
     private func saveProgress() {
-        guard surah != nil else { return }
+        guard itemMatches, !pendingStart, let s = surah else { return }
         defaults.set(currentTime, forKey: "quranPosition")
+        defaults.set(key(s, reciter), forKey: "quranPositionKey")
     }
 
     private func finished() {
         guard let s = surah else { return }
+        defaults.set(0.0, forKey: "quranPosition")
         if let n = Surah.by(id: s.id + 1) {
             play(n)
             onAutoAdvance?()
         } else {
-            defaults.set(0.0, forKey: "quranPosition")
             withAnimation { isPlaying = false }
         }
     }
@@ -316,23 +376,24 @@ final class QuranPlayer {
     private func setUpRemoteCommands() {
         let c = MPRemoteCommandCenter.shared()
         c.playCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.play() }; return .success
+            Task { @MainActor in self?.play() }; return .success
         }
         c.pauseCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.pause() }; return .success
+            Task { @MainActor in self?.pause() }; return .success
         }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.toggle() }; return .success
+            Task { @MainActor in self?.toggle() }; return .success
         }
         c.nextTrackCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.next() }; return .success
+            Task { @MainActor in self?.next() }; return .success
         }
         c.previousTrackCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.previous() }; return .success
+            Task { @MainActor in self?.previous() }; return .success
         }
         c.changePlaybackPositionCommand.addTarget { [weak self] e in
             guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            MainActor.assumeIsolated { self?.seek(to: e.positionTime) }; return .success
+            let t = e.positionTime
+            Task { @MainActor in self?.seek(to: t) }; return .success
         }
     }
 

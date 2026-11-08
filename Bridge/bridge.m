@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 #include <dlfcn.h>
 #include <stdio.h>
+#include <math.h>
 
 typedef void (*GetInfoFn)(dispatch_queue_t, void (^)(NSDictionary *));
 typedef void (*GetPlayingFn)(dispatch_queue_t, void (^)(Boolean));
@@ -31,6 +32,12 @@ static void load(void) {
   pSetElapsed = dlsym(h, "MRMediaRemoteSetElapsedTime");
 }
 
+/// NSJSONSerialization throws (crashing the bridge) on NaN / inf, e.g. a live stream's duration.
+static id finite(id v) {
+  if ([v isKindOfClass:NSNumber.class] && !isfinite([v doubleValue])) return nil;
+  return v;
+}
+
 static void emit(void) {
   pGetInfo(q, ^(NSDictionary *info) {
     pGetPlaying(q, ^(Boolean playing) {
@@ -44,19 +51,22 @@ static void emit(void) {
         if ((v = info[@"kMRMediaRemoteNowPlayingInfoTitle"])) o[@"title"] = v;
         if ((v = info[@"kMRMediaRemoteNowPlayingInfoArtist"])) o[@"artist"] = v;
         if ((v = info[@"kMRMediaRemoteNowPlayingInfoAlbum"])) o[@"album"] = v;
-        if ((v = info[@"kMRMediaRemoteNowPlayingInfoDuration"])) o[@"duration"] = v;
-        if ((v = info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"])) o[@"elapsed"] = v;
-        if ((v = info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"])) o[@"rate"] = v;
+        if ((v = finite(info[@"kMRMediaRemoteNowPlayingInfoDuration"]))) o[@"duration"] = v;
+        if ((v = finite(info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"]))) o[@"elapsed"] = v;
+        if ((v = finite(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]))) o[@"rate"] = v;
         NSDate *ts = info[@"kMRMediaRemoteNowPlayingInfoTimestamp"];
-        if (ts) o[@"timestamp"] = @([ts timeIntervalSince1970]);
+        if ([ts isKindOfClass:NSDate.class] && isfinite([ts timeIntervalSince1970])) o[@"timestamp"] = @([ts timeIntervalSince1970]);
+        for (NSString *k in @[@"title", @"artist", @"album"])
+          if (o[k] && ![o[k] isKindOfClass:NSString.class]) [o removeObjectForKey:k];
         NSString *title = info[@"kMRMediaRemoteNowPlayingInfoTitle"] ?: @"";
         if (![title isEqualToString:lastTitle ?: @""]) { lastArtworkHash = nil; lastTitle = title; }
         NSData *art = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
-        if (art.length) {
+        if ([art isKindOfClass:NSData.class] && art.length && art.length < 8 * 1024 * 1024) {
           NSString *hash = [NSString stringWithFormat:@"%lu-%lu", (unsigned long)art.length, (unsigned long)art.hash];
           o[@"artworkId"] = hash;
           if (![hash isEqualToString:lastArtworkHash]) { o[@"artwork"] = [art base64EncodedStringWithOptions:0]; lastArtworkHash = hash; }
         }
+        if (![NSJSONSerialization isValidJSONObject:o]) return;
         NSData *json = [NSJSONSerialization dataWithJSONObject:o options:0 error:nil];
         if (json) { fwrite(json.bytes, 1, json.length, stdout); fputc('\n', stdout); fflush(stdout); }
       });

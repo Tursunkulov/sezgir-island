@@ -17,8 +17,11 @@ final class LocationFinder: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var continuation: CheckedContinuation<CLLocation, Error>?
     private var timeoutTask: Task<Void, Never>?
+    private var retried = false
 
     func locate() async throws -> CLLocation {
+        timeoutTask?.cancel()
+        retried = false
         if let c = continuation { c.resume(throwing: Failure.other("Отменено")); continuation = nil }
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyKilometer
@@ -61,8 +64,12 @@ final class LocationFinder: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         let denied = (error as? CLError)?.code == .denied
         MainActor.assumeIsolated {
-            // kCLErrorLocationUnknown is transient; CoreLocation keeps trying.
-            if (error as? CLError)?.code == .locationUnknown { return }
+            // kCLErrorLocationUnknown is transient, but requestLocation() is one-shot: ask once more.
+            if (error as? CLError)?.code == .locationUnknown, !retried, continuation != nil {
+                retried = true
+                self.manager.requestLocation()
+                return
+            }
             finish(.failure(denied ? Failure.denied : Failure.other(error.localizedDescription)))
         }
     }

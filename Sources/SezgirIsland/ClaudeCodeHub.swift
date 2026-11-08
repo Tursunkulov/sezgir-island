@@ -62,6 +62,21 @@ final class ClaudeCodeHub {
     @ObservationIgnored var onAttention: (() -> Void)?
     @ObservationIgnored var onDone: ((Session) -> Void)?
     @ObservationIgnored var onRequestsCleared: (() -> Void)?
+    /// Sessions you just continued from the island: their next Stop may be held again even though
+    /// Claude Code marks it `stop_hook_active` (a person is in the loop, so it can't spin forever).
+    @ObservationIgnored private var humanContinued: Set<String> = []
+    @ObservationIgnored private var maintenance: Timer?
+
+    /// Start the once-a-minute cleanup of sessions Claude Code stopped telling us about.
+    func startMaintenance() {
+        guard maintenance == nil else { return }
+        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pruneStale() }
+        }
+        t.tolerance = 15
+        RunLoop.main.add(t, forMode: .common)
+        maintenance = t
+    }
 
     /// How long Claude waits after finishing so you can send a follow-up from the island.
     static let replyWindow: TimeInterval = 25
@@ -105,6 +120,7 @@ final class ClaudeCodeHub {
 
         case "UserPromptSubmit":
             releaseStopHold(sid)
+            humanContinued.remove(sid)
             s.state = .working
             s.started = Date()
             s.activity = "Думает…"
@@ -150,9 +166,11 @@ final class ClaudeCodeHub {
 
         case "Stop":
             s.lastMessage = (o["last_assistant_message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let continuedByYou = humanContinued.remove(sid) != nil
             if let text = takeQueued(sid) {
                 s.activity = "Получил ваше сообщение"
                 sessions[sid] = s
+                humanContinued.insert(sid)
                 reply.send(["decision": "block", "reason": Self.wrap(text)])
                 return
             }
@@ -160,7 +178,9 @@ final class ClaudeCodeHub {
             s.activity = "Готово"
             sessions[sid] = s
             // You're already in the Claude app: reply there, don't keep the turn open.
-            if Self.claudeAppIsFrontmost || (o["stop_hook_active"] as? Bool ?? false) {
+            // `stop_hook_active` means a Stop hook already continued this turn; only hold again if that was you.
+            let stopActive = o["stop_hook_active"] as? Bool ?? false
+            if Self.claudeAppIsFrontmost || (stopActive && !continuedByYou) {
                 reply.send(nil)
             } else {
                 holdStop(sid, reply: reply)
@@ -171,10 +191,13 @@ final class ClaudeCodeHub {
         case "SessionEnd":
             sessions[sid] = nil
             releaseStopHold(sid)
+            humanContinued.remove(sid)
+            let hadRequests = !requests.isEmpty
             for r in requests where r.sessionID == sid { r.reply.send(nil) }
             requests.removeAll { $0.sessionID == sid }
             queued[sid] = nil
             reply.send(nil)
+            if hadRequests && requests.isEmpty { onRequestsCleared?() }
             return
 
         default:
@@ -185,9 +208,10 @@ final class ClaudeCodeHub {
     }
 
     private func hold(_ r: Request) {
+        let id = r.id // capture only the id: the request owns the reply, so capturing it would leak both
         r.reply.onCancel = { [weak self] in
             // Answered in the Claude app, interrupted, or timed out.
-            self?.remove(r.id, newState: nil)
+            self?.remove(id, newState: nil)
         }
         requests.append(r)
         selectedSessionID = r.sessionID
@@ -257,6 +281,7 @@ final class ClaudeCodeHub {
             stopTimers[sid]?.cancel(); stopTimers[sid] = nil
             stopHoldDeadline[sid] = nil
             hold.send(["decision": "block", "reason": Self.wrap(t)])
+            humanContinued.insert(sid)
             s.state = .working; s.started = Date(); s.activity = "Получил ваше сообщение"
             sessions[sid] = s
             return .continued
@@ -307,10 +332,21 @@ final class ClaudeCodeHub {
     }
 
     private func pruneStale() {
-        let cutoff = Date().addingTimeInterval(-45 * 60)
-        for (id, s) in sessions where s.updated < cutoff && s.state != .working && stopHolds[id] == nil
-            && !requests.contains(where: { $0.sessionID == id }) {
-            sessions[id] = nil
+        let now = Date()
+        for (id, s) in sessions where stopHolds[id] == nil && !requests.contains(where: { $0.sessionID == id }) {
+            let quiet = now.timeIntervalSince(s.updated)
+            if quiet > 45 * 60 {
+                sessions[id] = nil
+                queued[id] = nil
+                humanContinued.remove(id)
+            } else if quiet > 10 * 60, s.state == .working || s.state == .waiting {
+                // Interrupted with Esc, crashed, or answered elsewhere: Claude Code sends no Stop then.
+                var s = s
+                s.state = .idle
+                s.activity = "Нет новостей от Claude Code"
+                sessions[id] = s
+                queued[id] = nil
+            }
         }
     }
 
@@ -318,6 +354,7 @@ final class ClaudeCodeHub {
         releaseStopHold(sid)
         sessions[sid] = nil
         queued[sid] = nil
+        humanContinued.remove(sid)
     }
 
     private static func wrap(_ text: String) -> String {
@@ -358,17 +395,32 @@ final class ClaudeCodeHub {
     struct PermissionDescription { let icon: String; let title: String; let subtitle: String?; let detail: String }
 
     static func describePermission(tool: String, input: [String: Any]) -> PermissionDescription {
+        let d = rawDescription(tool: tool, input: input)
+        // Hook payloads can come from prompt-injected content: make invisible / direction-flipping
+        // characters visible so the card can't show something different from what gets approved.
+        return .init(icon: d.icon, title: revealHidden(d.title), subtitle: d.subtitle.map(revealHidden),
+                     detail: revealHidden(d.detail))
+    }
+
+    private static func rawDescription(tool: String, input: [String: Any]) -> PermissionDescription {
         func s(_ k: String) -> String { input[k] as? String ?? "" }
         switch tool {
         case "Bash":
-            return .init(icon: "terminal.fill", title: "Выполнить команду", subtitle: s("description").nilIfEmpty, detail: s("command"))
+            // The real command is the headline; Claude's own description is only a comment under it.
+            let cmd = s("command")
+            let desc = s("description")
+            return .init(icon: "terminal.fill", title: "Выполнить команду",
+                         subtitle: oneLine(cmd).nilIfEmpty,
+                         detail: limited(desc.isEmpty ? cmd : cmd + "\n\n# " + desc))
         case "Edit", "MultiEdit":
-            let new = s("new_string")
+            let old = s("old_string"), new = s("new_string")
+            let detail = old.isEmpty && new.isEmpty ? s("file_path")
+                : "− " + limited(old, 4000) + "\n+ " + limited(new, 8000)
             return .init(icon: "pencil", title: "Изменить \(URL(fileURLWithPath: s("file_path")).lastPathComponent)",
-                         subtitle: s("file_path"), detail: new.isEmpty ? s("file_path") : new)
+                         subtitle: s("file_path"), detail: detail)
         case "Write":
             return .init(icon: "doc.badge.plus", title: "Записать \(URL(fileURLWithPath: s("file_path")).lastPathComponent)",
-                         subtitle: s("file_path"), detail: String(s("content").prefix(600)))
+                         subtitle: s("file_path"), detail: limited(s("content")))
         case "WebFetch":
             return .init(icon: "globe", title: "Открыть страницу", subtitle: s("prompt").nilIfEmpty, detail: s("url"))
         case "WebSearch":
@@ -379,8 +431,62 @@ final class ClaudeCodeHub {
             let json = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys]))
                 .map { String(decoding: $0, as: UTF8.self) } ?? ""
             let title = tool.hasPrefix("mcp__") ? "MCP: \(tool.dropFirst(5).replacingOccurrences(of: "__", with: " · "))" : tool
-            return .init(icon: "puzzlepiece.extension.fill", title: title, subtitle: nil, detail: String(json.prefix(800)))
+            return .init(icon: "puzzlepiece.extension.fill", title: title, subtitle: nil, detail: limited(json))
         }
+    }
+
+    /// Long text is cut only with a clear marker (the card scrolls, so normal sizes are shown in full).
+    private static func limited(_ text: String, _ max: Int = 20_000) -> String {
+        guard text.count > max else { return text }
+        return String(text.prefix(max)) + "\n\n⚠︎ … ещё \(text.count - max) символов не показано — откройте в Claude (↗), чтобы увидеть всё"
+    }
+
+    /// Bidi overrides, zero-width and other format characters become a visible ⟦U+XXXX⟧.
+    static func revealHidden(_ text: String) -> String {
+        var out = ""
+        out.reserveCapacity(text.utf8.count)
+        for u in text.unicodeScalars {
+            let v = u.value
+            let hidden = (0x202A...0x202E).contains(v) || (0x2066...0x2069).contains(v)
+                || (0x200B...0x200F).contains(v) || v == 0x2060 || v == 0xFEFF || v == 0x061C || v == 0x00AD
+                || (0xE0000...0xE007F).contains(v)
+                || (u.properties.generalCategory == .control && u != "\n" && u != "\t")
+            if hidden { out += String(format: "⟦U+%04X⟧", v) } else { out.unicodeScalars.append(u) }
+        }
+        return out
+    }
+
+    /// Human-readable list of what "Всегда" would save (Claude Code's permission_suggestions).
+    static func describeSuggestions(_ suggestions: [Any]) -> String {
+        var parts: [String] = []
+        for case let sug as [String: Any] in suggestions {
+            let type = sug["type"] as? String ?? ""
+            let dest: String = switch sug["destination"] as? String ?? "" {
+            case "session": "на эту сессию"
+            case "localSettings": "в этом проекте (локально)"
+            case "projectSettings": "в настройках проекта"
+            case "userSettings": "для всех проектов"
+            default: ""
+            }
+            switch type {
+            case "addRules", "replaceRules":
+                let rules = (sug["rules"] as? [[String: Any]] ?? []).map { r -> String in
+                    let tool = r["toolName"] as? String ?? "?"
+                    if let c = r["ruleContent"] as? String, !c.isEmpty { return "\(tool)(\(c))" }
+                    return "\(tool) — любые вызовы"
+                }
+                let verb = (sug["behavior"] as? String) == "deny" ? "запретить" : "разрешать"
+                parts.append("\(verb) \(rules.joined(separator: ", ")) \(dest)")
+            case "setMode":
+                parts.append("режим «\(sug["mode"] as? String ?? "?")» \(dest)")
+            case "addDirectories":
+                let dirs = (sug["directories"] as? [String] ?? []).joined(separator: ", ")
+                parts.append("доступ к папкам \(dirs) \(dest)")
+            default:
+                parts.append(type)
+            }
+        }
+        return revealHidden(parts.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "; "))
     }
 
     static func parseQuestions(_ input: [String: Any]) -> [Question]? {

@@ -17,9 +17,9 @@ final class NowPlaying {
     var accent: Color = .white
     var appIcon: NSImage?
 
-    private var baseElapsed: Double = 0
-    private var rate: Double = 0
-    private var timestamp = Date()
+    fileprivate var baseElapsed: Double = 0
+    fileprivate var rate: Double = 0
+    fileprivate var timestamp = Date()
 
     @ObservationIgnored var onTrackChange: (() -> Void)?
     @ObservationIgnored private var process: Process?
@@ -27,6 +27,8 @@ final class NowPlaying {
     @ObservationIgnored private var buffer = Data()
     @ObservationIgnored private var receivedFirst = false
     @ObservationIgnored private var pendingToggleUntil: Date?
+    @ObservationIgnored private var launchedAt = Date.distantPast
+    @ObservationIgnored private var relaunchDelay: Double = 2
 
     var hasMedia: Bool { !title.isEmpty }
 
@@ -44,6 +46,15 @@ final class NowPlaying {
         withAnimation(.smooth(duration: 0.3)) { isPlaying.toggle() }
         pendingToggleUntil = Date().addingTimeInterval(0.8)
         send("toggle")
+    }
+
+    /// Pause (never start) whatever is playing — used before the Quran player starts.
+    func pause() {
+        guard isPlaying else { return }
+        freezeElapsed()
+        withAnimation(.smooth(duration: 0.3)) { isPlaying = false }
+        pendingToggleUntil = Date().addingTimeInterval(0.8)
+        send("pause")
     }
 
     func next() { send("next") }
@@ -96,11 +107,22 @@ final class NowPlaying {
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.consume(data) } }
         }
         p.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                MainActor.assumeIsolated { self?.launchBridge() }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // Back off if the bridge keeps dying right after start (2 s … 2 min).
+                    let ranLong = Date().timeIntervalSince(self.launchedAt) > 30
+                    self.relaunchDelay = ranLong ? 2 : min(self.relaunchDelay * 2, 120)
+                    self.input = nil
+                    self.buffer.removeAll()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + self.relaunchDelay) {
+                        MainActor.assumeIsolated { self.launchBridge() }
+                    }
+                }
             }
         }
         do {
+            launchedAt = Date()
             try p.run()
             process = p
             input = inp.fileHandleForWriting
@@ -111,6 +133,8 @@ final class NowPlaying {
 
     private func consume(_ data: Data) {
         buffer.append(data)
+        // A line with full-size artwork is at most a few MB; anything bigger is garbage.
+        if buffer.count > 16 << 20 { buffer.removeAll(); return }
         while let nl = buffer.firstIndex(of: 0x0A) {
             let line = Data(buffer[buffer.startIndex..<nl])
             buffer.removeSubrange(buffer.startIndex...nl)
@@ -141,24 +165,23 @@ final class NowPlaying {
         let changed = newTitle != title || newArtist != artist
         let newPlaying = (o["playing"] as? Bool) ?? false
 
-        title = newTitle
-        artist = newArtist
-        album = o["album"] as? String ?? ""
-        duration = o["duration"] as? Double ?? 0
-        baseElapsed = o["elapsed"] as? Double ?? 0
-        rate = o["rate"] as? Double ?? 0
-        if let ts = o["timestamp"] as? Double {
-            timestamp = Date(timeIntervalSince1970: ts)
-        } else {
-            timestamp = Date()
-        }
+        // Only assign what changed: every @Observable write redraws the views that read it,
+        // and the bridge sends a heartbeat every 5 s.
+        assign(\.title, newTitle)
+        assign(\.artist, newArtist)
+        assign(\.album, o["album"] as? String ?? "")
+        assign(\.duration, finite(o["duration"]))
+        assign(\.baseElapsed, finite(o["elapsed"]))
+        assign(\.rate, finite(o["rate"]))
+        let ts = finite(o["timestamp"])
+        assign(\.timestamp, ts > 0 ? Date(timeIntervalSince1970: ts) : Date())
 
         // Ignore a stale "playing" value right after our own toggle.
         if let until = pendingToggleUntil, Date() < until, newPlaying != isPlaying {
             freezeElapsed()
         } else {
             pendingToggleUntil = nil
-            isPlaying = newPlaying
+            assign(\.isPlaying, newPlaying)
         }
 
         let newBundle = o["bundle"] as? String
@@ -169,7 +192,7 @@ final class NowPlaying {
                 .map { NSWorkspace.shared.icon(forFile: $0.path) }
         }
 
-        if let b64 = o["artwork"] as? String, let data = Data(base64Encoded: b64), let img = NSImage(data: data) {
+        if let b64 = o["artwork"] as? String, let data = Data(base64Encoded: b64), let img = NSImage.thumbnail(from: data) {
             artwork = img
             accent = Color(nsColor: img.islandAccent)
         } else if changed {
@@ -182,7 +205,31 @@ final class NowPlaying {
     }
 }
 
+extension NowPlaying {
+    fileprivate func assign<T: Equatable>(_ kp: ReferenceWritableKeyPath<NowPlaying, T>, _ v: T) {
+        if self[keyPath: kp] != v { self[keyPath: kp] = v }
+    }
+
+    fileprivate func finite(_ v: Any?) -> Double {
+        guard let d = v as? Double, d.isFinite else { return 0 }
+        return d
+    }
+}
+
+private let accentContext = CIContext(options: [.workingColorSpace: NSNull()])
+
 extension NSImage {
+    /// Decode artwork downsampled to 256 px: Now Playing can hand us multi-megapixel images.
+    static func thumbnail(from data: Data) -> NSImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 256,
+              ] as CFDictionary) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
     /// Average colour of the artwork, pushed bright and saturated enough to glow on black.
     var islandAccent: NSColor {
         guard let tiff = tiffRepresentation, let ci = CIImage(data: tiff),
@@ -191,7 +238,7 @@ extension NSImage {
               ]),
               let output = filter.outputImage else { return .white }
         var px = [UInt8](repeating: 0, count: 4)
-        CIContext(options: [.workingColorSpace: NSNull()]).render(
+        accentContext.render(
             output, toBitmap: &px, rowBytes: 4,
             bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
         let base = NSColor(srgbRed: CGFloat(px[0]) / 255, green: CGFloat(px[1]) / 255,

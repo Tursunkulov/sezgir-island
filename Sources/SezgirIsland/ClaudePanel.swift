@@ -21,7 +21,13 @@ struct ClaudePanel: View {
             } else {
                 VStack(spacing: 0) {
                     QuickAskPanel()
-                    if !model.claudeHooksInstalled { ConnectClaudeCodeBanner() }
+                    if let e = model.claudeHooksError {
+                        Label(e, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.yellow.opacity(0.85))
+                            .lineLimit(1)
+                            .padding(.top, 4)
+                    } else if !model.claudeHooksInstalled { ConnectClaudeCodeBanner() }
                 }
                 .transition(.islandBlur)
             }
@@ -107,10 +113,13 @@ struct QuickAskPanel: View {
         .onChange(of: focused) { _, f in model.isEditing = f }
         .onChange(of: model.claudeFocusToken) { _, _ in focused = true }
         .onAppear {
-            if model.claudeFocusToken > 0 {
+            // Focus only when ⌃⌥C / paste asked for it, not on every hover.
+            if model.claudeFocusPending {
+                model.claudeFocusPending = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { focused = true }
             }
         }
+        .onDisappear { model.isEditing = false }
     }
 }
 

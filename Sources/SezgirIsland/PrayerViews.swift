@@ -73,7 +73,7 @@ private struct PrayerDay: View {
                         Text(n.prayer.isPrayer ? "До \(n.prayer.name)" : "До восхода")
                             .font(.system(size: 12.5, weight: .medium))
                             .foregroundStyle(.white.opacity(0.7))
-                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        TimelineView(CountdownSchedule(target: n.date)) { ctx in
                             Text(prayerCountdown(n.date.timeIntervalSince(ctx.date)))
                                 .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
                                 .foregroundStyle(prayerGreen)
@@ -330,7 +330,7 @@ struct PrayerSoonCompact: View {
                     Text("сейчас · " + model.prayer.timeString(e.date))
                         .foregroundStyle(prayerGreen)
                 } else if let e = entry {
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    TimelineView(CountdownSchedule(target: e.date)) { ctx in
                         let left = e.date.timeIntervalSince(ctx.date)
                         Text(left < 3600 ? "через " + prayerCountdown(left) : "в " + model.prayer.timeString(e.date))
                             .foregroundStyle(left < 600 ? prayerGreen : prayerGreen.opacity(0.75))
@@ -341,6 +341,28 @@ struct PrayerSoonCompact: View {
             .font(.system(size: 12, weight: .semibold).monospacedDigit())
             .lineLimit(1)
             .padding(.trailing, 11)
+        }
+    }
+}
+
+/// Redraw a countdown once a minute (on the minute — prayer times are whole minutes),
+/// and every second only during the last minute. Saves CPU in the always-visible pill.
+struct CountdownSchedule: TimelineSchedule {
+    let target: Date
+
+    func entries(from start: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        var t = start
+        return AnyIterator {
+            let cur = t
+            if target.timeIntervalSince(cur) > 61 {
+                let next = Calendar.current.nextDate(after: cur, matching: DateComponents(second: 0),
+                                                     matchingPolicy: .nextTime) ?? cur.addingTimeInterval(60)
+                t = min(next, target.addingTimeInterval(-61))
+                if t <= cur { t = cur.addingTimeInterval(1) }
+            } else {
+                t = cur.addingTimeInterval(1)
+            }
+            return cur
         }
     }
 }

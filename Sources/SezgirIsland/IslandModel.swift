@@ -42,6 +42,8 @@ final class IslandModel {
     var claudeText = ""
     var isEditing = false
     var claudeFocusToken = 0
+    /// One-shot: focus the quick-ask field next time it appears.
+    var claudeFocusPending = false
     var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var claudeHooksInstalled = HookInstaller.isInstalled
@@ -55,6 +57,10 @@ final class IslandModel {
     /// Source picked by hand in the player tab; cleared when the island closes.
     var playerPick: PlayerSource?
     var surahPickerOpen = false
+    /// Opened by Claude Code needing attention: stays open until you hover it or click away.
+    var attentionPinned = false
+    /// Last problem with the Claude Code connection, shown in the Claude tab.
+    var claudeHooksError: String?
     var prayerAlert: PrayerTimes.Entry?
     /// Keep "next prayer · in N min" next to the notch whenever nothing else is showing.
     var prayerAlwaysVisible = UserDefaults.standard.object(forKey: "prayerAlwaysVisible") as? Bool ?? true {
@@ -84,7 +90,10 @@ final class IslandModel {
     }
 
     var isPinned: Bool {
-        demoLock || isEditing || (tab == .claude && (!claudeText.isEmpty || claude.hasRequests))
+        // Leftover quick-ask text only pins while the quick-ask field is what's on screen.
+        let quickAskShown = claude.sessions.isEmpty && !claude.hasRequests
+        return demoLock || isEditing || attentionPinned
+            || (tab == .claude && (claude.hasRequests || (quickAskShown && !claudeText.isEmpty)))
     }
 
     /// What the player tab shows: whatever is playing, else whatever was used last.
@@ -103,7 +112,8 @@ final class IslandModel {
         guard tab == .claude else { return tab == .prayer ? 144 : 124 }
         if let r = claude.requests.first {
             if case .question(let qs) = r.kind {
-                let opts = qs.first?.options.count ?? 2
+                // Size for the biggest page so later questions aren't clipped.
+                let opts = qs.map(\.options.count).max() ?? 2
                 return opts > 2 ? 218 : 170
             }
             return 186
@@ -150,10 +160,7 @@ final class IslandModel {
         }
         quran.onAutoAdvance = { [weak self] in self?.showToast(.track, for: 3.2) }
         // Don't let a recitation play over a YouTube video or music.
-        quran.willPlay = { [weak self] in
-            guard let self, self.media.hasMedia, self.media.isPlaying else { return }
-            self.media.togglePlay()
-        }
+        quran.willPlay = { [weak self] in self?.media.pause() }
         battery.onEvent = { [weak self] event in
             switch event {
             case .pluggedIn: self?.showToast(.charging, for: 3)
@@ -175,7 +182,8 @@ final class IslandModel {
     }
 
     func configureScreen() {
-        let s = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main ?? NSScreen.screens[0]
+        guard let s = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main ?? NSScreen.screens.first
+        else { return } // no displays at all (lid closing / unplugging); we'll be called again
         screen = s
         if s.safeAreaInsets.top > 0, let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea {
             notch = CGSize(width: s.frame.width - l.width - r.width, height: s.safeAreaInsets.top)
@@ -270,12 +278,15 @@ final class IslandModel {
             return
         }
         let rect = islandRect
-        let ignore = !rect.insetBy(dx: -1, dy: -1).contains(p)
+        // On a screen without a notch the idle island is invisible: don't swallow menu-bar clicks there.
+        let invisible = mode == .idle && !screenHasNotch
+        let ignore = invisible || !rect.insetBy(dx: -1, dy: -1).contains(p)
         if panel?.ignoresMouseEvents != ignore { panel?.ignoresMouseEvents = ignore } // a window-server call: only on change
         let hot = expanded ? rect.insetBy(dx: -14, dy: -14) : rect.union(notchRect).insetBy(dx: -8, dy: -6)
 
         if hot.contains(p) {
             collapseTask?.cancel(); collapseTask = nil
+            if expanded && attentionPinned { attentionPinned = false } // seen it; normal hover rules again
             if !expanded && expandTask == nil {
                 expandTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(80))
@@ -324,6 +335,7 @@ final class IslandModel {
         collapseTask?.cancel(); collapseTask = nil
         withAnimation(Self.closeSpring) { expanded = false }
         isEditing = false
+        attentionPinned = false
         playerPick = nil
         surahPickerOpen = false
         if panel?.isKeyWindow == true {
@@ -360,6 +372,7 @@ final class IslandModel {
         expand(tab: .claude)
         panel?.makeKey()
         claudeFocusToken += 1
+        claudeFocusPending = true
     }
 
     func askClaude() {
@@ -384,24 +397,31 @@ final class IslandModel {
         claudeText = claudeText.isEmpty ? s : claudeText + " " + s
         panel?.makeKey()
         claudeFocusToken += 1
+        claudeFocusPending = true
     }
 
     // MARK: Claude Code
 
     private func startClaudeCode() {
+        HookInstaller.refreshScriptIfInstalled()
         hookServer.handler = { [weak self] body, reply in
             guard let self else { return }
+            #if DEBUG
             if UserDefaults.standard.bool(forKey: "debugHooks"), let action = body["debug_action"] as? String {
                 self.debugAction(action)
                 reply.send(["ok": true])
                 return
             }
+            #endif
             self.claude.handle(body, reply: reply)
         }
+        hookServer.onFailure = { [weak self] message in self?.claudeHooksError = message }
+        claude.startMaintenance()
         hookServer.start()
         claude.onAttention = { [weak self] in
             guard let self else { return }
             self.toast = nil
+            self.attentionPinned = true
             self.expand(tab: .claude)
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
         }
@@ -412,7 +432,9 @@ final class IslandModel {
             if !self.expanded { self.showToast(.claudeDone, for: ClaudeCodeHub.replyWindow) }
         }
         claude.onRequestsCleared = { [weak self] in
-            guard let self, self.expanded else { return }
+            guard let self else { return }
+            self.attentionPinned = false
+            guard self.expanded else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 MainActor.assumeIsolated {
                     if !self.islandRect.contains(NSEvent.mouseLocation) && !self.claude.hasRequests {
@@ -424,7 +446,8 @@ final class IslandModel {
         }
     }
 
-    /// Test-only: drive the first pending card without clicking (launch with `-debugHooks YES`).
+    #if DEBUG
+    /// Test-only (debug builds): drive the first pending card without clicking (launch with `-debugHooks YES`).
     private func debugAction(_ a: String) {
         guard let r = claude.requests.first else {
             if a.hasPrefix("send:") { _ = sendToClaudeCode(String(a.dropFirst(5))) }
@@ -442,10 +465,16 @@ final class IslandModel {
             }
         }
     }
+    #endif
 
     func setClaudeHooks(_ on: Bool) {
-        do { on ? try HookInstaller.install() : try HookInstaller.uninstall() }
-        catch { NSLog("SezgirIsland: hooks \(on ? "install" : "uninstall") failed: \(error)") }
+        do {
+            on ? try HookInstaller.install() : try HookInstaller.uninstall()
+            claudeHooksError = hookServerFailure
+        } catch {
+            NSLog("SezgirIsland: hooks \(on ? "install" : "uninstall") failed: \(error)")
+            claudeHooksError = error.localizedDescription
+        }
         claudeHooksInstalled = HookInstaller.isInstalled
     }
 
@@ -457,9 +486,15 @@ final class IslandModel {
         return r
     }
 
+    private var hookServerFailure: String? { hookServer.failure }
+
     private func collapseSoon() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            MainActor.assumeIsolated { self?.isEditing = false; self?.collapse(restoreFocus: true) }
+            MainActor.assumeIsolated {
+                guard let self, !self.claude.hasRequests else { return } // a new card arrived meanwhile
+                self.isEditing = false
+                self.collapse(restoreFocus: true)
+            }
         }
     }
 

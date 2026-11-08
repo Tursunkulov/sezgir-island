@@ -262,11 +262,15 @@ struct PermissionCard: View {
     let request: ClaudeCodeHub.Request
     @State private var note = ""
     @FocusState private var noteFocused: Bool
+    /// Buttons wake up a moment after the card appears, so a double-click on the previous card
+    /// can't approve this one unseen.
+    @State private var armed = false
 
     var body: some View {
         let hub = model.claude
         let d = ClaudeCodeHub.describePermission(tool: request.toolName, input: request.input)
-        let canAlways: Bool = { if case .permission(let s) = request.kind { return !s.isEmpty }; return false }()
+        let suggestions: [Any] = { if case .permission(let s) = request.kind { return s }; return [] }()
+        let canAlways = !suggestions.isEmpty
 
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 11) {
@@ -296,9 +300,18 @@ struct PermissionCard: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 10).padding(.vertical, 8)
             }
-            .frame(height: 56)
+            .frame(height: canAlways ? 44 : 56)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.055)))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 1))
+
+            if canAlways {
+                Text("«Всегда» запомнит: " + ClaudeCodeHub.describeSuggestions(suggestions))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.top, -4)
+            }
 
             HStack(spacing: 7) {
                 IslandTextField(placeholder: "Или скажите Claude, что сделать иначе…", text: $note, focused: $noteFocused) {
@@ -309,13 +322,15 @@ struct PermissionCard: View {
                     hub.deny(request, message: note)
                 }
                 if canAlways {
-                    ActionButton(title: "Всегда") { hub.allow(request, always: true) }
-                        .help("Разрешить и больше не спрашивать для такой команды")
+                    ActionButton(title: "Всегда", disabled: !armed) { hub.allow(request, always: true) }
+                        .help("Разрешить и запомнить: " + ClaudeCodeHub.describeSuggestions(suggestions))
                 }
-                ActionButton(title: "Разрешить", kind: .primary) { hub.allow(request) }
+                ActionButton(title: "Разрешить", kind: .primary, disabled: !armed) { hub.allow(request) }
             }
         }
         .onChange(of: noteFocused) { _, f in model.isEditing = f }
+        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { armed = true } }
+        .onDisappear { model.isEditing = false }
     }
 }
 
@@ -330,6 +345,7 @@ struct QuestionCard: View {
     @State private var picked: [String] = []
     @State private var other = ""
     @FocusState private var otherFocused: Bool
+    @State private var armed = false
 
     private var q: ClaudeCodeHub.Question { questions[min(index, questions.count - 1)] }
     private var isLast: Bool { index >= questions.count - 1 }
@@ -368,7 +384,7 @@ struct QuestionCard: View {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                 ForEach(Array(q.options.enumerated()), id: \.offset) { i, opt in
                     OptionButton(index: i + 1, option: opt, selected: picked.contains(opt.label), multi: q.multiSelect) {
-                        tap(opt.label)
+                        if armed { tap(opt.label) }
                     }
                 }
             }
@@ -380,11 +396,13 @@ struct QuestionCard: View {
                 IconPill(icon: "arrow.up.forward.app", help: "Ответить в приложении Claude") { hub.passToApp(request) }
                 if q.multiSelect || !other.isEmpty {
                     ActionButton(title: isLast ? "Ответить" : "Далее", kind: .primary,
-                                 disabled: picked.isEmpty && other.trimmingCharacters(in: .whitespaces).isEmpty) { commitCurrent() }
+                                 disabled: !armed || (picked.isEmpty && other.trimmingCharacters(in: .whitespaces).isEmpty)) { commitCurrent() }
                 }
             }
         }
         .onChange(of: otherFocused) { _, f in model.isEditing = f }
+        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { armed = true } }
+        .onDisappear { model.isEditing = false }
     }
 
     private func tap(_ label: String) {
@@ -535,6 +553,7 @@ struct SessionsPanel: View {
             model.isEditing = f
             if f, let id = selected?.id { hub.extendReplyWindow(id) }
         }
+        .onDisappear { model.isEditing = false }
         .onChange(of: message) { _, _ in
             if let id = selected?.id { hub.extendReplyWindow(id) }
         }
