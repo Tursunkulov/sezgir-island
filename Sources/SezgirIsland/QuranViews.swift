@@ -61,7 +61,7 @@ struct QuranPlayerView: View {
                         .disabled(q.surah == nil)
                     ZStack {
                         ControlButton(icon: q.isPlaying || q.isLoading ? "pause.fill" : "play.fill", size: 22) {
-                            if q.surah == nil { q.play(s) } else { q.toggle() }
+                            if q.surah == nil { q.resume() } else { q.toggle() }
                         }
                         if q.isLoading {
                             ProgressView().controlSize(.small).allowsHitTesting(false).offset(y: 22)

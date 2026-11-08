@@ -117,7 +117,7 @@ final class QuranPlayer {
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var urlCache: [String: URL] = [:]
     @ObservationIgnored private var loadTask: Task<Void, Never>?
-    @ObservationIgnored private var lastSavedSecond = -1
+    @ObservationIgnored private var lastSavedSecond = -5 // so the first tick (second 0…4) already saves
     @ObservationIgnored private var pendingStart = false
     /// "reciter/surah" of the AVPlayerItem that is loaded right now.
     @ObservationIgnored private var itemKey: String?
